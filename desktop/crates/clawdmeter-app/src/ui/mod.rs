@@ -78,6 +78,7 @@ const ASSETS: &[(&str, &[u8])] = bundled![
         "waveshare_epaper_154",
         "xingzhi_cube_183",
         "freenove_s3_display_nontouch",
+        "diymore_es3c28p",
         "sensecap_indicator_d1l",
         "spotpear_s3_154",
     ],

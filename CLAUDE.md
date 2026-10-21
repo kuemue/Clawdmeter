@@ -47,6 +47,7 @@ Nested `CLAUDE.md` files load when you read or edit a file in their folder.
 | `waveshare_epaper_154` | Waveshare ESP32-S3-ePaper-1.54 | SSD1681 e-paper 200×200, no touch, `minimal_ui` |
 | `xingzhi_cube_183` | Xingzhi Cube 1.83 TFT WiFi | ST7789-type SPI 284×240 landscape, no touch, 3 buttons, battery ADC |
 | `freenove_s3_display_nontouch` | Freenove ESP32-S3 Display (FNK0104A, non-touch) | ILI9341 SPI 240×320, minimal UI, BOOT is the only button |
+| `diymore_es3c28p` | DIYMORE ES3C28P (2.8", touch) | ILI9341V SPI 240×320, FT6336 touch, minimal UI, BOOT double-press rotates |
 | `sensecap_indicator_d1l` | Seeed SenseCap Indicator D1L | ST7701S RGB 480×480, FT6x36 touch, PCA9535; GPIO 38 key is the PWR role |
 | `spotpear_s3_154` | SpotPear ESP32-S3-LCD-1.54 MUMA | ST7789 SPI 240×240, CST816 touch, no PMU, BOOT only |
 | `sim` | SDL2 desktop simulator | `platform = native`, 480×480 by default |

@@ -56,6 +56,7 @@ DISPLAY_NAMES = {
     "waveshare_epaper_154": "Waveshare ESP32-S3 ePaper 1.54\"",
     "xingzhi_cube_183": "Xingzhi Cube 1.83 inch TFT WiFi",
     "freenove_s3_display_nontouch": "Freenove ESP32-S3 Display 2.8 inch (non-touch)",
+    "diymore_es3c28p": "DIYMORE ESP32-S3 2.8 inch Display (touch, ES3C28P)",
     "sensecap_indicator_d1l": "Seeed SenseCAP Indicator D1L",
     "spotpear_s3_154": "SpotPear ESP32-S3 LCD 1.54\" MUMA",
 }
