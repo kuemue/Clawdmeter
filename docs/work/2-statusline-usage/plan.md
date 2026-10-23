@@ -37,3 +37,9 @@ Issue: #2. From spec.md (2026-10-23). Accepted by: gates off.
 - `clawdmeter --once` after one prompt prints `session N%, week M%` matching Claude Code.
 - Photo or screenshot of the device showing the meters; Hooks page screenshot.
 - No new `claude -p` or network call: grep the diff for `Command::new` / `ureq` in the new code (only the chained user command).
+
+## As built: step 1 spike (2026-10-23)
+- CLI (`claude` 2.1.207, interactive): runs `statusLine` on every update. It sent no `rate_limits` because the CLI said "Login expired · Please run /login".
+- Desktop Code tab: a new session replied, and `statusLine` never ran.
+- Stopped here, as the plan says. The status line can't feed the meter for desktop-app work, which is most of the owner's use.
+- Likely real cause of the token miss: the CLI sign-in in `~/.claude/.credentials.json` has expired. A fresh `/login` should bring back the existing OAuth source, and `claude -p /usage` renews the token after that. Next: owner runs `/login` and we re-check before building anything.
