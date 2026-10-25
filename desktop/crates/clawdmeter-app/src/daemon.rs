@@ -5,6 +5,7 @@
 //! event loop never shares a reactor with it. The UI talks to it through a
 //! [`DaemonHandle`]: commands in, a [`Status`] snapshot out.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -13,9 +14,10 @@ use clawdmeter_ble::{
     MAX_WRITE,
 };
 use clawdmeter_core::attention::AttentionInbox;
-use clawdmeter_core::backoff;
+use clawdmeter_core::backoff::{self, SavedBlock};
 use clawdmeter_core::engine::PollPlan;
 use clawdmeter_core::events::EventTail;
+use clawdmeter_core::oauth;
 use clawdmeter_core::probe;
 use clawdmeter_core::usage;
 use clawdmeter_core::{unix_now, Engine, EngineStatus, HostClock, Paths, Settings, WriteKind};
@@ -116,6 +118,22 @@ pub fn spawn(paths: Paths) -> DaemonHandle {
 type PollResults = Vec<(PathBuf, probe::Polled)>;
 type ConnectResult = Result<(DeviceLink, DeviceEvents), LinkError>;
 
+/// Save the endpoint blocks when they changed; returns what is now saved.
+fn save_blocks_if_changed(
+    paths: &Paths,
+    engine: &Engine,
+    saved: BTreeMap<PathBuf, SavedBlock>,
+) -> BTreeMap<PathBuf, SavedBlock> {
+    let blocks = engine.blocks(unix_now());
+    if blocks == saved {
+        return saved;
+    }
+    if let Err(e) = backoff::save_blocks(&paths.usage_blocks_file(), &blocks) {
+        log::warn!("couldn't save usage blocks: {e}");
+    }
+    blocks
+}
+
 /// Read each account of a poll plan: the probe, `/usage`, or a reading known
 /// without a call. The probe runs from `cwd` (the state dir).
 fn poll_all(claude: Option<PathBuf>, plan: PollPlan, home: PathBuf, cwd: PathBuf) -> PollResults {
@@ -146,6 +164,8 @@ pub async fn run(paths: Paths, mut commands: mpsc::UnboundedReceiver<Command>, s
     // lengthens it).
     engine.restore_blocks(&backoff::load_blocks(&paths.usage_blocks_file()), unix_now());
     let mut saved_blocks = engine.blocks(unix_now());
+    // Who is signed in to each account, to notice a switch.
+    let mut signed_in: BTreeMap<PathBuf, String> = BTreeMap::new();
     let host = HostClock { utc_offset_secs: 0, prefers_12h: clawdmeter_core::platform::prefers_12h() };
     let inbox = AttentionInbox::new(&paths.state_dir);
     let (mut tail, seed) = EventTail::open(paths.events_log());
@@ -235,6 +255,18 @@ pub async fn run(paths: Paths, mut commands: mpsc::UnboundedReceiver<Command>, s
                 engine.update_settings(s);
                 engine.set_claude_found(claude.is_some());
             }
+            // A `/login` to another account: poll it now rather than show
+            // the previous account until the next scheduled poll.
+            // Only two different known IDs count: an unreadable moment, or a
+            // logout and back in to the same account, is no switch.
+            for dir in engine.settings().config_dirs.clone() {
+                let Some(id) = oauth::account_id(&dir, &paths.home) else { continue };
+                if signed_in.insert(dir.clone(), id.clone()).is_some_and(|prev| prev != id) {
+                    log::info!("{}: another account signed in; polling it now", dir.display());
+                    engine.on_account_switched(&dir);
+                    saved_blocks = save_blocks_if_changed(&paths, &engine, saved_blocks);
+                }
+            }
         }
 
         // ---- fast clock ----
@@ -278,13 +310,7 @@ pub async fn run(paths: Paths, mut commands: mpsc::UnboundedReceiver<Command>, s
                     }
                 }
                 engine.on_poll_results(unix_now(), results);
-                let blocks = engine.blocks(unix_now());
-                if blocks != saved_blocks {
-                    if let Err(e) = backoff::save_blocks(&paths.usage_blocks_file(), &blocks) {
-                        log::warn!("couldn't save usage blocks: {e}");
-                    }
-                    saved_blocks = blocks;
-                }
+                saved_blocks = save_blocks_if_changed(&paths, &engine, saved_blocks);
             }
         }
         if polling.is_none() {

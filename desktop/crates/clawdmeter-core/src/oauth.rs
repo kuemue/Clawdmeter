@@ -141,6 +141,22 @@ pub fn read_token(config_dir: &Path, home: &Path, now: i64) -> Option<Token> {
     }
 }
 
+/// Who is signed in to one account: `oauthAccount.accountUuid` in Claude
+/// Code's `.claude.json` (`~/.claude.json` for `~/.claude`, run without
+/// `CLAUDE_CONFIG_DIR`; else inside the config dir). `None` when signed out
+/// or unreadable. Only compared, to notice a `/login` to another account;
+/// never logged or stored.
+pub fn account_id(config_dir: &Path, home: &Path) -> Option<String> {
+    let file =
+        if config_dir == home.join(".claude") { home.join(".claude.json") } else { config_dir.join(".claude.json") };
+    parse_account_id(&std::fs::read_to_string(file).ok()?)
+}
+
+fn parse_account_id(text: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    v.get("oauthAccount")?.get("accountUuid")?.as_str().filter(|s| !s.is_empty()).map(str::to_owned)
+}
+
 fn keychain_token(config_dir: &Path, home: &Path) -> Option<Token> {
     let user = std::env::var("USER").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| "claude-code-user".into());
     let out = std::process::Command::new("security")
@@ -268,6 +284,25 @@ mod tests {
         assert_eq!(parse_credentials(r#"{"claudeAiOauth":{"accessToken":""}}"#), None);
         assert_eq!(parse_credentials("not json"), None);
         assert!(!format!("{t:?}").contains("sk-ant"), "never logged");
+    }
+
+    #[test]
+    fn account_ids() {
+        let signed_in = r#"{"oauthAccount":{"accountUuid":"u1","emailAddress":"x"}}"#;
+        assert_eq!(parse_account_id(signed_in).as_deref(), Some("u1"));
+        assert_eq!(parse_account_id(r#"{"oauthAccount":{"accountUuid":""}}"#), None);
+        assert_eq!(parse_account_id(r#"{"numStartups":3}"#), None);
+        assert_eq!(parse_account_id("not json"), None);
+        // Where each account's file lives.
+        let tmp = std::env::temp_dir().join(format!("clawdmeter-acct-{}", std::process::id()));
+        let work = tmp.join(".claude-work");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(tmp.join(".claude.json"), r#"{"oauthAccount":{"accountUuid":"home"}}"#).unwrap();
+        std::fs::write(work.join(".claude.json"), r#"{"oauthAccount":{"accountUuid":"work"}}"#).unwrap();
+        assert_eq!(account_id(&tmp.join(".claude"), &tmp).as_deref(), Some("home"));
+        assert_eq!(account_id(&work, &tmp).as_deref(), Some("work"));
+        assert_eq!(account_id(&tmp.join(".claude-none"), &tmp), None);
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     #[test]
