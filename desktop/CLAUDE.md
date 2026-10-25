@@ -119,6 +119,10 @@ Per account (`probe.rs`, `oauth.rs`):
   the account once.
 - No account is polled twice within 2 min, whatever asked (prompt, Stop,
   device REQ, tray "Refresh now").
+- A `/login` to another account in the same config dir (its
+  `oauthAccount.accountUuid` in `.claude.json` changes; checked every 5 s)
+  resets that account's state, backoff included, and polls it at once
+  (`Engine::on_account_switched`). The ID is only compared, never logged.
 - Backoff (`backoff.rs`, idle source only): a 429 parks the account for
   exactly its `retry-after`; other transient misses (no 429 header, offline,
   `/usage` printing no `Current …` lines, timeouts) park it 10 → 20 → 30 min,

@@ -3,7 +3,7 @@
 //! the clock, and performs the writes it asks for.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -129,6 +129,8 @@ pub struct Engine {
     selector: PlanSelector<PathBuf>,
     accounts: BTreeMap<PathBuf, AccountState>,
     in_flight: Vec<PathBuf>,
+    /// Accounts switched while their poll ran: that answer is the old account's.
+    dropped: Vec<PathBuf>,
     active: Option<PathBuf>,
     rate: RateTracker,
     hooks_installed: bool,
@@ -170,6 +172,7 @@ impl Engine {
             selector: PlanSelector::default(),
             accounts: BTreeMap::new(),
             in_flight: Vec::new(),
+            dropped: Vec::new(),
             active: None,
             rate: RateTracker::default(),
             hooks_installed: false,
@@ -270,6 +273,25 @@ impl Engine {
     /// wait for that to pass.
     pub fn request_refresh(&mut self, now: i64) {
         self.scheduler.request(now);
+    }
+
+    /// Another Claude account signed in to `dir` (`/login`). Its old reading,
+    /// backoff and rate samples were the previous account's, so they go and
+    /// the account polls again at once, as at start-up. The device keeps
+    /// the old numbers until that poll answers.
+    pub fn on_account_switched(&mut self, dir: &Path) {
+        if !self.settings.config_dirs.iter().any(|d| d == dir) {
+            return;
+        }
+        self.accounts.insert(dir.to_path_buf(), AccountState::default());
+        // A poll already running carries the old account's answer.
+        if self.in_flight.iter().any(|d| d == dir) {
+            self.in_flight.retain(|d| d != dir);
+            self.dropped.push(dir.to_path_buf());
+        }
+        if self.active.as_deref() == Some(dir) {
+            self.rate = RateTracker::default();
+        }
     }
 
     /// A (re)connection: resend everything the device needs.
@@ -387,7 +409,9 @@ impl Engine {
     /// Results of one poll (the accounts of a [`PollPlan`]).
     /// A plain `Result` counts as the idle source's.
     pub fn on_poll_results<R: Into<probe::Polled>>(&mut self, now: i64, results: Vec<(PathBuf, R)>) {
-        let results: Vec<(PathBuf, probe::Polled)> = results.into_iter().map(|(d, r)| (d, r.into())).collect();
+        let dropped = std::mem::take(&mut self.dropped);
+        let results: Vec<(PathBuf, probe::Polled)> =
+            results.into_iter().filter(|(d, _)| !dropped.contains(d)).map(|(d, r)| (d, r.into())).collect();
         let polled = !results.is_empty();
         let ok_dirs: Vec<PathBuf> = results.iter().filter(|(_, r)| r.result.is_ok()).map(|(d, _)| d.clone()).collect();
         for (dir, r) in results {
@@ -943,6 +967,36 @@ mod tests {
     /// `/usage` stays the source.
     fn usage_reading(s: u32) -> UsageReading {
         UsageReading { session: Some(Window { pct: s, resets_at: None }), ..reading(s) }
+    }
+
+    // `/login` to another account in the same config dir: the old account's
+    // backoff and numbers go, the dir polls at once, and an answer still in
+    // flight from the old account is dropped.
+    #[test]
+    fn account_switch_forgets_old_state_and_polls_now() {
+        let mut e = Engine::new(settings(""));
+        let a = PathBuf::from("/h/.claude");
+        assert_eq!(poll(&mut e, T0, |_| Ok(usage_reading(40))), vec![a.clone()]);
+        assert_eq!(
+            poll(&mut e, T0 + 800, |_| Err(UsageError::RateLimited { retry_after_secs: 3000 })),
+            vec![a.clone()]
+        );
+        assert!(e.begin_poll(T0 + 900).is_none(), "backing off");
+
+        e.on_account_switched(&a);
+        assert_eq!(e.status(T0 + 900).reading.map(|r| r.session_pct()), None, "old account's numbers gone");
+        let plan = e.begin_poll(T0 + 900).expect("polls the new account at once");
+        assert_eq!(plan.accounts, vec![a.clone()]);
+        e.on_account_switched(&a);
+        e.on_poll_results(T0 + 901, vec![(a.clone(), Err(UsageError::RateLimited { retry_after_secs: 3000 }))]);
+        assert_eq!(e.status(T0 + 901).reading, None, "the old account's late answer is dropped");
+        assert_eq!(e.begin_poll(T0 + 902).map(|p| p.plans), Some(vec![ProbePlan::Usage]), "polled at once, no probe");
+        e.on_poll_results(T0 + 902, vec![(a.clone(), Ok(usage_reading(5)))]);
+        assert_eq!(e.status(T0 + 902).reading.map(|r| r.session_pct()), Some(5));
+        assert_eq!(write(&mut e, T0 + 902).unwrap().kind, WriteKind::Poll);
+
+        e.on_account_switched(Path::new("/h/.not-configured"));
+        assert!(e.begin_poll(T0 + 903).is_none(), "unknown dirs are ignored");
     }
 
     // The owner's case: the shown account's /usage comes back without its
