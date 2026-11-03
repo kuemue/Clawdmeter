@@ -261,6 +261,7 @@ pub async fn run(paths: Paths, mut commands: mpsc::UnboundedReceiver<Command>, s
             // logout and back in to the same account, is no switch.
             for dir in engine.settings().config_dirs.clone() {
                 let Some(id) = oauth::account_id(&dir, &paths.home) else { continue };
+                engine.set_account_id(&dir, &id);
                 if signed_in.insert(dir.clone(), id.clone()).is_some_and(|prev| prev != id) {
                     log::info!("{}: another account signed in; polling it now", dir.display());
                     engine.on_account_switched(&dir);
