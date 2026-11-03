@@ -150,6 +150,9 @@ pub struct Engine {
     last_event_ts: Option<i64>,
     /// Latest prompt or tool activity that names no configured account.
     unattributed_activity: Option<i64>,
+    /// Who is signed in to each config dir (`oauth::account_id`). Dirs on
+    /// the same login share one window, so they share activity too.
+    account_ids: BTreeMap<PathBuf, String>,
     /// A `claude` binary was found, so the probe can run.
     claude_found: bool,
     /// A new alert should chime on this computer (`desktop_chime`).
@@ -188,6 +191,7 @@ impl Engine {
             sent_pm: None,
             last_event_ts: None,
             unattributed_activity: None,
+            account_ids: BTreeMap::new(),
             claude_found: true,
             desktop_chime_due: false,
         }
@@ -225,7 +229,14 @@ impl Engine {
     pub fn on_hook_event(&mut self, ev: &HookEvent, now: i64) {
         if ev.kind.sends_messages() {
             match ev.account.as_ref().and_then(|a| self.settings.config_dirs.iter().find(|d| *d == a)) {
-                Some(d) => self.accounts.entry(d.clone()).or_default().note_activity(ev.ts),
+                Some(d) => {
+                    let id = self.account_ids.get(d);
+                    for dir in &self.settings.config_dirs {
+                        if dir == d || id.is_some_and(|id| self.account_ids.get(dir) == Some(id)) {
+                            self.accounts.entry(dir.clone()).or_default().note_activity(ev.ts);
+                        }
+                    }
+                }
                 None => self.unattributed_activity = self.unattributed_activity.max(Some(ev.ts)),
             }
         }
@@ -273,6 +284,22 @@ impl Engine {
     /// wait for that to pass.
     pub fn request_refresh(&mut self, now: i64) {
         self.scheduler.request(now);
+    }
+
+    /// Who is signed in to `dir` (`oauth::account_id`), for crediting a
+    /// prompt to every dir on the same login.
+    pub fn set_account_id(&mut self, dir: &Path, id: &str) {
+        let Some(old) = self.account_ids.insert(dir.to_path_buf(), id.to_owned()) else { return };
+        if old == id {
+            return;
+        }
+        // A prompt from `dir` since its `/login` may have been credited to
+        // the old login's dirs: drop that credit so no probe starts a window.
+        for (d, st) in self.accounts.iter_mut() {
+            if self.account_ids.get(d) == Some(&old) {
+                st.first_activity = None;
+            }
+        }
     }
 
     /// Another Claude account signed in to `dir` (`/login`). Its old reading,
@@ -1082,6 +1109,32 @@ mod tests {
         let mut later = Engine::new(settings(""));
         later.restore_blocks(&saved, T0 + 4000);
         assert!(later.blocks(T0 + 4000).is_empty());
+    }
+
+    // Two folders signed in to one account share its window: a prompt from
+    // one starts it for the other too, so neither shows it as over (#5).
+    #[test]
+    fn activity_counts_for_every_folder_on_the_same_login() {
+        let mut e = Engine::new(settings("config_dirs = ~/.claude,~/.work,~/.other\n"));
+        let (a, b, c) = (PathBuf::from("/h/.claude"), PathBuf::from("/h/.work"), PathBuf::from("/h/.other"));
+        e.set_account_id(&a, "u1");
+        e.set_account_id(&b, "u1");
+        e.set_account_id(&c, "u2");
+        e.on_poll_results(
+            T0,
+            vec![(a.clone(), Ok(reading(0))), (b.clone(), Ok(reading(0))), (c.clone(), Ok(reading(0)))],
+        );
+        let ended = T0 + 3600;
+        assert!(matches!(e.source(&b, ended), Source::NotStarted(_)), "no activity: the window is over");
+        let mine = HookEvent { account: Some(a.clone()), ..ev(ended + 60, "UserPromptSubmit") };
+        e.on_hook_event(&mine, ended + 60);
+        assert_eq!(e.source(&a, ended + 120), Source::Probe);
+        assert_eq!(e.source(&b, ended + 120), Source::Probe, "same login: its window runs");
+        assert!(matches!(e.source(&c, ended + 120), Source::NotStarted(_)), "another login stays over");
+        // `/login` in a dir drops the credit its prompts gave the old login.
+        e.set_account_id(&a, "u2");
+        e.on_account_switched(&a);
+        assert_ne!(e.source(&b, ended + 120), Source::Probe, "no probe on a window nobody started");
     }
 
     fn plans(e: &mut Engine, now: i64) -> Vec<ProbePlan> {
