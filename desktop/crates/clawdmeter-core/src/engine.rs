@@ -437,7 +437,7 @@ impl Engine {
         // never flips the shown account. Only an account with no reading at
         // all is left out.
         let sessions: Vec<(PathBuf, u32)> =
-            self.accounts.iter().filter_map(|(k, a)| a.last.as_ref().map(|r| (k.clone(), r.session_pct()))).collect();
+            self.accounts.iter().filter_map(|(k, a)| a.last.as_ref().map(|r| (k.clone(), r.activity_pct()))).collect();
         let prev_active = self.active.clone();
         self.active = self.selector.choose(&sessions);
         if self.active != prev_active && self.settings.config_dirs.len() > 1 {
