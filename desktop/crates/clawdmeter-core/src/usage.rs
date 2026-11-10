@@ -96,6 +96,15 @@ impl UsageReading {
         }
     }
 
+    /// What the account selector watches for a rise: the session %, or the
+    /// week % on plans with no 5-hour window (they would never rise).
+    pub fn activity_pct(&self) -> u32 {
+        match (&self.session, &self.week) {
+            (None, Some(w)) => w.pct,
+            _ => self.session_pct(),
+        }
+    }
+
     /// True when a 5-hour window is running (a session line with a reset).
     pub fn window_started(&self) -> bool {
         self.session.as_ref().is_some_and(|w| w.resets_at.is_some())
@@ -932,6 +941,15 @@ impl AccountState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activity_pct_uses_week_when_no_session() {
+        let w = |pct| Some(Window { pct, resets_at: None });
+        let weekly_only = UsageReading { week: w(37), ..Default::default() };
+        assert_eq!(weekly_only.activity_pct(), 37);
+        let both = UsageReading { session: w(12), week: w(37), ..Default::default() };
+        assert_eq!(both.activity_pct(), 12);
+    }
 
     fn at(s: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
